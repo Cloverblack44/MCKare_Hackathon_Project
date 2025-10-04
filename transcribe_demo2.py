@@ -7,10 +7,15 @@ import whisper
 import torch
 import sounddevice as sd
 import queue
+import soundfile as sf
+
+from utils.transcribe_from_mic import transcribe_microphone
+from utils.transcribe_from_audio_file import transcribe_audio_file
 
 from datetime import datetime, timedelta
 from time import sleep
-
+from threading import Thread
+import soundfile as sf
 
 def main():
     parser = argparse.ArgumentParser()
@@ -29,6 +34,10 @@ def main():
                         help="Sample rate for audio recording.", type=int)
     parser.add_argument("--output_dir", default="transcriptions",
                         help="Directory to save transcription files.", type=str)
+    parser.add_argument("--audio_file", default=None,
+                        help="Path to audio file to transcribe (instead of microphone).", type=str)
+    parser.add_argument("--play_audio", action='store_true',
+                        help="Play audio file while transcribing.")
     args = parser.parse_args()
 
     # Create output directory if it doesn't exist
@@ -36,18 +45,13 @@ def main():
     
     # Generate unique filename with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(args.output_dir, f"transcription_{timestamp}.txt")
-
-
-
-    # The last time a recording was retrieved from the queue.
-    phrase_time = None
-
-    # Thread safe Queue for passing data from the threaded recording callback.
-    data_queue = queue.Queue()
-
-    # Bytes object which holds audio data for the current phrase
-    phrase_audio = np.array([], dtype=np.float32)
+    
+    # If audio file is provided, use its name in the output filename
+    if args.audio_file:
+        base_name = os.path.splitext(os.path.basename(args.audio_file))[0]
+        output_file = os.path.join(args.output_dir, f"transcription_{base_name}_{timestamp}.txt")
+    else:
+        output_file = os.path.join(args.output_dir, f"transcription_{timestamp}.txt")
     
     # Load / Download model
     model = args.model
@@ -55,103 +59,14 @@ def main():
         model = model + ".en"
     audio_model = whisper.load_model(model)
 
-    record_timeout = args.record_timeout
-    phrase_timeout = args.phrase_timeout
-    sample_rate = args.sample_rate
-    energy_threshold = args.energy_threshold
-
-    transcription = ['']
-
-    def audio_callback(indata, frames, time, status):
-        """
-        Callback function to receive audio data from the microphone.
-        """
-        if status:
-            print(status)
-        
-        # Calculate RMS energy to detect speech
-        audio_data = indata.copy().flatten()
-        energy = np.sqrt(np.mean(audio_data**2))
-        
-        # Only add to queue if energy exceeds threshold
-        if energy > energy_threshold:
-            data_queue.put(audio_data.copy())
-
-    # Start the audio stream
     print("Model loaded.\n")
     print(f"Transcription will be saved to: {output_file}\n")
-    print("Listening... (Press Ctrl+C to stop)\n")
-    
-    stream = sd.InputStream(
-        samplerate=sample_rate,
-        channels=1,
-        dtype=np.float32,
-        blocksize=int(sample_rate * record_timeout),
-        callback=audio_callback
-    )
 
-    with stream:
-        while True:
-            try:
-                now = datetime.utcnow()
-                
-                # Pull raw recorded audio from the queue.
-                if not data_queue.empty():
-                    phrase_complete = False
-                    
-                    # If enough time has passed between recordings, consider the phrase complete.
-                    if phrase_time and now - phrase_time > timedelta(seconds=phrase_timeout):
-                        phrase_audio = np.array([], dtype=np.float32)
-                        phrase_complete = True
-                    
-                    # This is the last time we received new audio data from the queue.
-                    phrase_time = now
-                    
-                    # Combine audio data from queue
-                    audio_chunks = []
-                    while not data_queue.empty():
-                        audio_chunks.append(data_queue.get())
-                    
-                    if audio_chunks:
-                        audio_data = np.concatenate(audio_chunks)
-                        
-                        # Add the new audio data to the accumulated data for this phrase
-                        phrase_audio = np.concatenate([phrase_audio, audio_data])
-                        
-                        # Read the transcription.
-                        result = audio_model.transcribe(phrase_audio, fp16=torch.cuda.is_available())
-                        text = result['text'].strip()
-
-                        # If we detected a pause between recordings, add a new item to our transcription.
-                        # Otherwise edit the existing one.
-                        if phrase_complete:
-                            transcription.append(text)
-                        else:
-                            transcription[-1] = text
-
-                        # Clear the console to reprint the updated transcription.
-                        os.system('cls' if os.name=='nt' else 'clear')
-                        for line in transcription:
-                            print(line)
-                        # Flush stdout.
-                        print('', end='', flush=True)
-                else:
-                    # Infinite loops are bad for processors, must sleep.
-                    sleep(0.1)
-                    
-            except KeyboardInterrupt:
-                break
-
-    print("\n\nFinal Transcription:")
-    for line in transcription:
-        print(line)
-    
-    with open(output_file, 'w', encoding='utf-8') as f:
-        for line in transcription:
-            if line:
-                f.write(line + '\n')
-    
-    print(f"\n✓ Transcription saved to: {output_file}")
+    # If audio file is provided, transcribe it directly
+    if args.audio_file:
+        transcribe_audio_file(args.audio_file, audio_model, output_file, args.play_audio)
+    else:
+        transcribe_microphone(args, audio_model, output_file)
 
 if __name__ == "__main__":
     main()
