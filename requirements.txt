@@ -1,0 +1,17 @@
+# Core numeric + signal processing
+numpy>=1.26
+scipy>=1.12
+
+# Audio handling
+pyaudio>=0.2.14
+soundfile>=0.12.1
+noisereduce>=3.0.0
+
+# Speech-to-text (OpenAI Whisper)
+openai-whisper>=20231117
+
+# (Optional) If Whisper complains about missing backends:
+torch>=2.2.0
+torchaudio>=2.2.0
+tqdm>=4.66.0
+numba>=0.58.0
