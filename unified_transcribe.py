@@ -514,7 +514,43 @@ def simple_record_and_transcribe(args, audio_model):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Unified Audio Transcription System - Real-time, noise reduction, and Raspberry Pi support"
+        description="""
+        ╔══════════════════════════════════════════════════════════════════╗
+        ║   Unified Audio Transcription System                            ║
+        ║   Combines real-time transcription, noise reduction,             ║
+        ║   and Raspberry Pi support in one modular script                 ║
+        ╚══════════════════════════════════════════════════════════════════╝
+
+        MODES:
+        realtime  - Live microphone transcription with streaming display
+        file      - Transcribe existing audio files (with optional playback)
+        simple    - Record audio, clean it, then transcribe (no realtime)
+        button    - Raspberry Pi GPIO button-triggered recording
+
+        EXAMPLES:
+        # Real-time transcription as you speak
+        python unified_transcribe.py --mode realtime --model base
+
+        # Transcribe a file with noise cleaning
+        python unified_transcribe.py --mode file --audio_file lecture.wav
+
+        # Simple recording (5 seconds, then transcribe)
+        python unified_transcribe.py --mode simple --record_duration 5
+
+        # Raspberry Pi button mode on GPIO pin 17
+        python unified_transcribe.py --mode button --gpio_pin 17
+                """,
+                formatter_class=argparse.RawDescriptionHelpFormatter,
+                epilog="""
+        TIPS:
+        - Use --model tiny for fastest processing on low-power devices
+        - Use --model large for highest accuracy (requires more RAM/CPU)
+        - Lower --energy_threshold if speech isn't being detected
+        - Use --no_clean to skip noise reduction for already-clean audio
+        - SOX cleaning is faster than noisereduce but requires installation
+
+        For detailed documentation, see design_README.md
+                """
     )
     
     # Mode selection
