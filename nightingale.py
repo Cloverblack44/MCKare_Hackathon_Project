@@ -1,6 +1,6 @@
 #! python3.7
 """
-Unified Audio Transcription System
+Nightingale - Unified Audio Transcription System
 Combines real-time transcription, noise reduction, and Raspberry Pi support
 
 Features:
@@ -199,6 +199,58 @@ def record_audio_simple(filename, duration, sample_rate=44100):
     
     print(f"✅ Saved raw audio: {filename}")
     return True
+
+
+# ============================================================================
+# AUDIO PLAYBACK MODULE
+# ============================================================================
+
+def play_audio_only(audio_file):
+    """
+    Just play an audio file without transcription
+    Simple playback function for testing audio files
+    """
+    if not HAS_SOUNDDEVICE:
+        print("❌ sounddevice not available for audio playback")
+        return
+    
+    if not os.path.exists(audio_file):
+        print(f"❌ Audio file not found: {audio_file}")
+        return
+    
+    print(f"🔊 Playing: {audio_file}")
+    print("   Press Ctrl+C to stop\n")
+    
+    try:
+        data, samplerate = sf.read(audio_file)
+        print(f"   Duration: {len(data)/samplerate:.2f} seconds")
+        print(f"   Sample rate: {samplerate} Hz")
+        print(f"   Channels: {data.ndim if data.ndim == 1 else data.shape[1]}\n")
+        print("▶️  Playing...\n")
+        
+        sd.play(data, samplerate)
+        sd.wait()
+        
+        print("\n✅ Playback complete!")
+        
+    except KeyboardInterrupt:
+        print("\n⏹️  Playback stopped by user")
+        sd.stop()
+    except Exception as e:
+        print(f"❌ Error playing audio: {e}")
+
+
+def play_audio_file(audio_file):
+    """
+    Play an audio file in a separate thread
+    Used for synced playback during transcription
+    """
+    try:
+        data, samplerate = sf.read(audio_file)
+        sd.play(data, samplerate)
+        sd.wait()
+    except Exception as e:
+        print(f"Error playing audio: {e}")
 
 
 # ============================================================================
@@ -751,7 +803,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="""
 ╔══════════════════════════════════════════════════════════════════╗
-║   Unified Audio Transcription System                            ║
+║   Nightingale - Audio Transcription System                      ║
 ║   Combines real-time transcription, noise reduction,             ║
 ║   and Raspberry Pi support in one modular script                 ║
 ╚══════════════════════════════════════════════════════════════════╝
