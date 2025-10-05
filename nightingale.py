@@ -239,20 +239,6 @@ def play_audio_only(audio_file):
     except Exception as e:
         print(f"❌ Error playing audio: {e}")
 
-
-def play_audio_file(audio_file):
-    """
-    Play an audio file in a separate thread
-    Used for synced playback during transcription
-    """
-    try:
-        data, samplerate = sf.read(audio_file)
-        sd.play(data, samplerate)
-        sd.wait()
-    except Exception as e:
-        print(f"Error playing audio: {e}")
-
-
 # ============================================================================
 # REAL-TIME TRANSCRIPTION MODULE (Kayla's approach)
 # ============================================================================
@@ -825,6 +811,9 @@ EXAMPLES:
   # Simple recording (5 seconds, then transcribe)
   python nightingale.py --mode simple --record_duration 5
 
+  # Just play an audio file (test your audio setup)
+  python nightingale.py --mode play --audio_file test.wav
+
   # Raspberry Pi button mode (each press records 5 seconds)
   python nightingale.py --mode button --gpio_pin 17
 
@@ -846,14 +835,16 @@ For detailed documentation, see design_README.md
     
     # Mode selection
     parser.add_argument("--mode", default="realtime",
-                        choices=["realtime", "file", "simple", "button", "button_toggle"],
+                        choices=["realtime", "file", "simple", "button", "button_toggle", "play"],
                         metavar="MODE",
                         help="Transcription mode (default: realtime)\n"
                              "  realtime = Live mic with streaming display\n"
                              "  file = Transcribe existing audio file\n"
                              "  simple = Record then transcribe (no realtime)\n"
                              "  button = RPi GPIO trigger (press=record N sec)\n"
-                             "  button_toggle = RPi GPIO (press=start, press=stop)")
+                             "  button_toggle = RPi GPIO (press=start, press=stop)\n"
+                             "  play = Just play audio file (no transcription)"
+                             )
     
     # Model settings
     parser.add_argument("--model", default="base",
@@ -936,6 +927,13 @@ For detailed documentation, see design_README.md
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.mode == "play":
+        if not args.audio_file:
+            print("❌ --audio_file required for play mode")
+            sys.exit(1)
+        play_audio_only(args.audio_file)
+        return
     
     # Load Whisper model
     model_name = args.model
