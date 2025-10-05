@@ -886,7 +886,12 @@ NOISE REDUCTION:
                               auto = Try SOX first, fallback to noisereduce [DEFAULT]
                               sox = Use SOX (faster, requires system install)
                               noisereduce = Pure Python (slower, no dependencies)
-
+TEXT-TO-SPEECH:
+  --tts                      Read transcription aloud after completion
+  --tts_rate WORDS_PER_MIN   Speech rate (default: 150)
+                              Lower = slower, Higher = faster
+                              Try 120 for clearer speech, 180 for faster
+                  
 FILE OPTIONS:
   --audio_file PATH          Path to audio file (required for file/play modes)
   --play_audio              Play audio while transcribing (file mode only)
