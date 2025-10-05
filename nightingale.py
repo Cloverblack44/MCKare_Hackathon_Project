@@ -60,6 +60,39 @@ try:
 except ImportError:
     HAS_NOISEREDUCE = False
 
+# ============================================================================
+# TEXT-TO-SPEECH MODULE
+# ============================================================================
+
+try:
+    import pyttsx3
+    HAS_TTS = True
+except ImportError:
+    HAS_TTS = False
+
+def speak_text(text, rate=150):
+    """
+    Read text aloud using pyttsx3 (offline TTS)
+    
+    Args:
+        text: String to speak
+        rate: Speech rate (words per minute, default 150)
+    """
+    if not HAS_TTS:
+        print("⚠️ pyttsx3 not available for text-to-speech")
+        return
+    
+    if not text or text.strip() == "":
+        return
+    
+    try:
+        engine = pyttsx3.init()
+        engine.setProperty('rate', rate)
+        engine.say(text)
+        engine.runAndWait()
+    except Exception as e:
+        print(f"⚠️ TTS error: {e}")
+
 # Suppress FP16 warnings
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU*")
 
@@ -336,6 +369,8 @@ def transcribe_microphone_realtime(args, audio_model, output_file):
                             transcription.append(text)
                         else:
                             transcription[-1] = text
+                            if args.tts and text:
+                                speak_text(text, args.tts_rate)
                         
                         # Display
                         os.system('cls' if os.name=='nt' else 'clear')
@@ -365,7 +400,7 @@ def transcribe_microphone_realtime(args, audio_model, output_file):
 # AUDIO FILE TRANSCRIPTION (Kayla's approach with playback)
 # ============================================================================
 
-def transcribe_audio_file(audio_file, audio_model, output_file, play_audio=False):
+def transcribe_audio_file(args, audio_file, audio_model, output_file, play_audio=False):
     """
     Transcribe an audio file with optional playback (Kayla's approach)
     Can display transcription in sync with audio
@@ -441,9 +476,14 @@ def transcribe_audio_file(audio_file, audio_model, output_file, play_audio=False
             if line:
                 f.write(line + '\n')
     
+    if args.tts:
+        full_text = ' '.join(transcription_lines)
+        speak_text(full_text, args.tts_rate)
+    
     if play_audio and audio_thread:
         print("\nWaiting for audio to finish...")
         audio_thread.join()
+    
     
     print(f"\n✅ Transcription saved to: {output_file}")
 
@@ -496,6 +536,9 @@ def raspberry_pi_button_mode(args, audio_model):
                     
                     print("🗣️ Transcript:")
                     print(text)
+
+                    if args.tts:
+                        speak_text(text, args.tts_rate)
                     
                     with open(transcript_file, "w", encoding='utf-8') as f:
                         f.write(text)
@@ -636,6 +679,10 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
             if line:
                 print(line)
         print("=" * 50)
+
+        if args.tts:
+            full_text = ' '.join([line for line in transcription if line])
+            speak_text(full_text, args.tts_rate)
         
         # Save final transcription
         with open(output_file, 'w', encoding='utf-8') as f:
@@ -778,6 +825,8 @@ def simple_record_and_transcribe(args, audio_model):
     
     print("🗣️ Transcript:")
     print(text if text else "[No speech detected]")
+    if args.tts and text:
+        speak_text(text, args.tts_rate)
     
     with open(transcript_file, "w", encoding='utf-8') as f:
         f.write(text)
@@ -962,6 +1011,12 @@ Use -h for this help, -H for detailed help with all parameters
     parser.add_argument("--output_dir", default="transcriptions",
                         help="Output directory (default: transcriptions)")
     
+    # Text-to-speech
+    parser.add_argument("--tts", action='store_true',
+                        help="Read transcription aloud (text-to-speech)")
+    parser.add_argument("--tts_rate", default=150, type=int,
+                        help="TTS speech rate in words/min (default: 150)")
+        
     args = parser.parse_args()
     
     # Create output directory
@@ -1010,7 +1065,7 @@ Use -h for this help, -H for detailed help with all parameters
         else:
             audio_to_transcribe = args.audio_file
         
-        transcribe_audio_file(audio_to_transcribe, audio_model, output_file, args.play_audio)
+        transcribe_audio_file(args, audio_to_transcribe, audio_model, output_file, args.play_audio)
     
     elif args.mode == "simple":
         print("🎙️ Simple Record & Transcribe Mode")
