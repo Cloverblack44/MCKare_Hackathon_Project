@@ -285,6 +285,48 @@ def play_audio_file(audio_file):
     except Exception as e:
         print(f"Error playing audio: {e}")
 
+def speak_from_file(file_path, rate=150):
+    """
+    Read a transcription file aloud using TTS
+    
+    Args:
+        file_path: Path to .txt transcript file
+        rate: Speech rate (words per minute, default 150)
+    """
+    if not HAS_TTS:
+        print("❌ pyttsx3 not available for text-to-speech")
+        return
+    
+    print(f"DEBUG: Looking for file: {file_path}")
+    print(f"DEBUG: Current working directory: {os.getcwd()}")
+    print(f"DEBUG: Absolute path: {os.path.abspath(file_path)}")
+    print(f"DEBUG: File exists check: {os.path.exists(file_path)}")
+    
+
+    if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
+        return
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            text = f.read().strip()
+        
+        if not text:
+            print("⚠️ File is empty")
+            return
+        
+        print(f"🔊 Reading transcript from: {file_path}")
+        print(f"   {len(text.split())} words, ~{len(text.split())/rate:.1f} minutes\n")
+        print("▶️  Speaking... (Press Ctrl+C to stop)\n")
+        
+        speak_text(text, rate)
+        
+        print("\n✅ Finished reading transcript")
+        
+    except KeyboardInterrupt:
+        print("\n⏹️  Stopped by user")
+    except Exception as e:
+        print(f"❌ Error reading file: {e}")
 
 # ============================================================================
 # REAL-TIME TRANSCRIPTION MODULE (Kayla's approach)
@@ -855,6 +897,8 @@ MODES (--mode):
   button         Raspberry Pi GPIO button-triggered recording
   button_toggle  Raspberry Pi GPIO start/stop toggle (press=start, press=stop)
   play           Just play an audio file (no transcription)
+  speak          Read transcript file aloud
+
 
 MODEL OPTIONS (--model):
   tiny    Fastest, least accurate (~1GB RAM, good for Raspberry Pi) [DEFAULT]
@@ -953,6 +997,8 @@ MODES:
   button         Raspberry Pi GPIO trigger
   button_toggle  Raspberry Pi start/stop toggle
   play           Just play audio
+  speak          Read a transcript file aloud using text-to-speech
+
 
 EXAMPLES:
   python nightingale.py --mode realtime
@@ -971,7 +1017,7 @@ Use -h for this help, -H for detailed help with all parameters
     
     # Mode selection
     parser.add_argument("--mode", default="realtime",
-                        choices=["realtime", "file", "simple", "button", "button_toggle", "play"],
+                        choices=["realtime", "file", "simple", "button", "button_toggle", "play", "speak"],
                         help="Transcription mode (default: realtime)")
     
     # Model settings
@@ -1035,6 +1081,14 @@ Use -h for this help, -H for detailed help with all parameters
         play_audio_only(args.audio_file)
         return
     
+    elif args.mode == "speak":
+        if not args.audio_file:
+            print("❌ --audio_file required for speak mode (path to .txt file)")
+            sys.exit(1)
+        speak_from_file(args.audio_file, args.tts_rate)
+        return 
+
+    
     # Load Whisper model for all other modes
     model_name = args.model
     if args.model != "large" and not args.non_english:
@@ -1083,6 +1137,7 @@ Use -h for this help, -H for detailed help with all parameters
     elif args.mode == "button_toggle":
         print("🔘 Raspberry Pi Button Toggle Mode (Press to Start/Stop)")
         raspberry_pi_button_toggle_mode(args, audio_model)
+
 
 
 if __name__ == "__main__":
