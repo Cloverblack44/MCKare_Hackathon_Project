@@ -407,13 +407,13 @@ def transcribe_audio_file(audio_file, audio_model, output_file, play_audio=False
 
 
 # ============================================================================
-# RASPBERRY PI BUTTON MODE (Chloe's approach)
+# RASPBERRY PI BUTTON MODE (Chloe's approach with start/stop toggle)
 # ============================================================================
 
 def raspberry_pi_button_mode(args, audio_model):
     """
     Raspberry Pi button-triggered recording mode (Chloe's approach)
-    Press button → record → clean → transcribe
+    Press button → record → clean → transcribe (original behavior)
     """
     if not HAS_GPIO:
         print("❌ RPi.GPIO not available. Not running on Raspberry Pi?")
@@ -471,6 +471,177 @@ def raspberry_pi_button_mode(args, audio_model):
         GPIO.cleanup()
 
 
+def raspberry_pi_button_toggle_mode(args, audio_model):
+    """
+    Raspberry Pi button START/STOP toggle mode
+    First press → start listening (realtime transcription)
+    Second press → stop listening and save
+    """
+    if not HAS_GPIO:
+        print("❌ RPi.GPIO not available. Not running on Raspberry Pi?")
+        return
+    
+    if not HAS_SOUNDDEVICE:
+        print("❌ sounddevice not available for realtime transcription")
+        return
+    
+    BUTTON_PIN = args.gpio_pin
+    
+    # Setup GPIO
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    
+    print(f"🔘 Ready. Press button on GPIO pin {BUTTON_PIN} to START/STOP listening.")
+    print("   First press = start listening, second press = stop and save")
+    
+    is_recording = False
+    stream = None
+    phrase_audio = np.array([], dtype=np.float32)
+    data_queue = queue.Queue()
+    transcription = ['']
+    output_file = None
+    
+    def audio_callback(indata, frames, time, status):
+        """Callback to receive audio data from microphone"""
+        if status:
+            print(status)
+        
+        # Calculate RMS energy to detect speech
+        audio_data = indata.copy().flatten()
+        energy = np.sqrt(np.mean(audio_data**2))
+        
+        # Only add to queue if energy exceeds threshold
+        if energy > args.energy_threshold:
+            data_queue.put(audio_data.copy())
+    
+    def start_listening():
+        """Start the audio stream and transcription"""
+        nonlocal stream, phrase_audio, transcription, output_file
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_file = os.path.join(args.output_dir, f"transcription_{timestamp}.txt")
+        
+        # Reset state
+        phrase_audio = np.array([], dtype=np.float32)
+        transcription = ['']
+        
+        # Clear queue
+        while not data_queue.empty():
+            data_queue.get()
+        
+        # Start stream
+        stream = sd.InputStream(
+            samplerate=args.sample_rate,
+            channels=1,
+            dtype=np.float32,
+            blocksize=int(args.sample_rate * args.record_timeout),
+            callback=audio_callback
+        )
+        stream.start()
+        
+        print("🎙️ LISTENING... (press button again to stop)")
+        print(f"   Saving to: {output_file}\n")
+    
+    def stop_listening():
+        """Stop the audio stream and save transcription"""
+        nonlocal stream
+        
+        if stream:
+            stream.stop()
+            stream.close()
+            stream = None
+        
+        print("\n🛑 STOPPED listening.")
+        print("\nFinal Transcription:")
+        print("=" * 50)
+        for line in transcription:
+            if line:
+                print(line)
+        print("=" * 50)
+        
+        # Save final transcription
+        with open(output_file, 'w', encoding='utf-8') as f:
+            for line in transcription:
+                if line:
+                    f.write(line + '\n')
+        
+        print(f"\n✅ Transcription saved to: {output_file}")
+        print("🔘 Ready. Press button to start new recording.\n")
+    
+    last_button_time = 0
+    phrase_time = None
+    
+    try:
+        while True:
+            # Check for button press with debounce
+            if GPIO.input(BUTTON_PIN) == GPIO.LOW:
+                current_time = time.time()
+                if current_time - last_button_time > 0.5:  # 500ms debounce
+                    last_button_time = current_time
+                    
+                    if not is_recording:
+                        # Start recording
+                        start_listening()
+                        is_recording = True
+                        sleep(0.5)  # Give user time to release button
+                    else:
+                        # Stop recording
+                        stop_listening()
+                        is_recording = False
+                        phrase_time = None
+                        sleep(0.5)  # Debounce
+            
+            # If recording, process audio queue
+            if is_recording and not data_queue.empty():
+                now = datetime.utcnow()
+                phrase_complete = False
+                
+                # If enough time has passed, consider the phrase complete
+                if phrase_time and now - phrase_time > timedelta(seconds=args.phrase_timeout):
+                    phrase_audio = np.array([], dtype=np.float32)
+                    phrase_complete = True
+                
+                phrase_time = now
+                
+                # Combine audio data from queue
+                audio_chunks = []
+                while not data_queue.empty():
+                    audio_chunks.append(data_queue.get())
+                
+                if audio_chunks:
+                    audio_data = np.concatenate(audio_chunks)
+                    phrase_audio = np.concatenate([phrase_audio, audio_data])
+                    
+                    # Transcribe
+                    result = audio_model.transcribe(phrase_audio, fp16=torch.cuda.is_available())
+                    text = result['text'].strip()
+                    
+                    # Update transcription
+                    if phrase_complete:
+                        transcription.append(text)
+                    else:
+                        transcription[-1] = text
+                    
+                    # Display (no clear screen on RPi, just append)
+                    print(f"\r{transcription[-1]}", end='', flush=True)
+                    
+                    # Save to file incrementally
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        for line in transcription:
+                            if line:
+                                f.write(line + '\n')
+            
+            sleep(0.05)
+    
+    except KeyboardInterrupt:
+        print("\n👋 Exiting...")
+        if stream:
+            stream.stop()
+            stream.close()
+    finally:
+        GPIO.cleanup()
+
+
 # ============================================================================
 # SIMPLE RECORDING MODE (Non-realtime, with cleaning)
 # ============================================================================
@@ -515,90 +686,130 @@ def simple_record_and_transcribe(args, audio_model):
 def main():
     parser = argparse.ArgumentParser(
         description="""
-        ╔══════════════════════════════════════════════════════════════════╗
-        ║   Unified Audio Transcription System                            ║
-        ║   Combines real-time transcription, noise reduction,             ║
-        ║   and Raspberry Pi support in one modular script                 ║
-        ╚══════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════╗
+║   Unified Audio Transcription System                            ║
+║   Combines real-time transcription, noise reduction,             ║
+║   and Raspberry Pi support in one modular script                 ║
+╚══════════════════════════════════════════════════════════════════╝
 
-        MODES:
-        realtime  - Live microphone transcription with streaming display
-        file      - Transcribe existing audio files (with optional playback)
-        simple    - Record audio, clean it, then transcribe (no realtime)
-        button    - Raspberry Pi GPIO button-triggered recording
+MODES:
+  realtime  - Live microphone transcription with streaming display
+  file      - Transcribe existing audio files (with optional playback)
+  simple    - Record audio, clean it, then transcribe (no realtime)
+  button    - Raspberry Pi GPIO button-triggered recording
 
-        EXAMPLES:
-        # Real-time transcription as you speak
-        python unified_transcribe.py --mode realtime --model base
+EXAMPLES:
+  # Real-time transcription as you speak
+  python unified_transcribe.py --mode realtime --model base
 
-        # Transcribe a file with noise cleaning
-        python unified_transcribe.py --mode file --audio_file lecture.wav
+  # Transcribe a file with noise cleaning
+  python unified_transcribe.py --mode file --audio_file lecture.wav
 
-        # Simple recording (5 seconds, then transcribe)
-        python unified_transcribe.py --mode simple --record_duration 5
+  # Simple recording (5 seconds, then transcribe)
+  python unified_transcribe.py --mode simple --record_duration 5
 
-        # Raspberry Pi button mode on GPIO pin 17
-        python unified_transcribe.py --mode button --gpio_pin 17
-                """,
-                formatter_class=argparse.RawDescriptionHelpFormatter,
-                epilog="""
-        TIPS:
-        - Use --model tiny for fastest processing on low-power devices
-        - Use --model large for highest accuracy (requires more RAM/CPU)
-        - Lower --energy_threshold if speech isn't being detected
-        - Use --no_clean to skip noise reduction for already-clean audio
-        - SOX cleaning is faster than noisereduce but requires installation
+  # Raspberry Pi button mode on GPIO pin 17
+  python unified_transcribe.py --mode button --gpio_pin 17
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+TIPS:
+  - Use --model tiny for fastest processing on low-power devices
+  - Use --model large for highest accuracy (requires more RAM/CPU)
+  - Lower --energy_threshold if speech isn't being detected
+  - Use --no_clean to skip noise reduction for already-clean audio
+  - SOX cleaning is faster than noisereduce but requires installation
 
-        For detailed documentation, see design_README.md
-                """
+For detailed documentation, see design_README.md
+        """
     )
     
     # Mode selection
     parser.add_argument("--mode", default="realtime",
                         choices=["realtime", "file", "simple", "button"],
-                        help="Transcription mode: realtime (mic+live), file (transcribe file), simple (record+transcribe), button (RPi GPIO)")
+                        metavar="MODE",
+                        help="Transcription mode (default: realtime)\n"
+                             "  realtime = Live mic with streaming display\n"
+                             "  file = Transcribe existing audio file\n"
+                             "  simple = Record then transcribe (no realtime)\n"
+                             "  button = Raspberry Pi GPIO trigger")
     
     # Model settings
     parser.add_argument("--model", default="base",
                         choices=["tiny", "base", "small", "medium", "large"],
-                        help="Whisper model to use (tiny fastest, large most accurate)")
+                        metavar="SIZE",
+                        help="Whisper model size (default: base)\n"
+                             "  tiny = Fastest, least accurate (~1GB RAM)\n"
+                             "  base = Good balance (~1GB RAM)\n"
+                             "  small = Better accuracy (~2GB RAM)\n"
+                             "  medium = High accuracy (~5GB RAM)\n"
+                             "  large = Best accuracy (~10GB RAM)")
     parser.add_argument("--non_english", action='store_true',
-                        help="Use multilingual model instead of English-only")
+                        help="Use multilingual model instead of English-only\n"
+                             "(English-only models are faster for English speech)")
     
     # Audio file settings
     parser.add_argument("--audio_file", type=str,
-                        help="Path to audio file (for file mode)")
+                        metavar="PATH",
+                        help="Path to audio file (required for file mode)\n"
+                             "Supports: .wav, .mp3, .m4a, .flac, etc.")
     parser.add_argument("--play_audio", action='store_true',
-                        help="Play audio file while transcribing (file mode only)")
+                        help="Play audio file while transcribing (file mode)\n"
+                             "Shows words synced to playback timing")
     
     # Real-time settings (Kayla's parameters)
     parser.add_argument("--energy_threshold", default=0.01, type=float,
-                        help="Energy level for mic to detect speech (realtime mode)")
+                        metavar="FLOAT",
+                        help="Energy level for mic to detect speech (default: 0.01)\n"
+                             "Lower = more sensitive (picks up quieter speech)\n"
+                             "Higher = less sensitive (ignores background noise)\n"
+                             "Try 0.005 for quiet environments, 0.02 for noisy")
     parser.add_argument("--record_timeout", default=2, type=float,
-                        help="Recording chunk size in seconds (realtime mode)")
+                        metavar="SECONDS",
+                        help="Recording chunk size in seconds (default: 2)\n"
+                             "How often to process audio in realtime mode\n"
+                             "Lower = more responsive, higher CPU usage")
     parser.add_argument("--phrase_timeout", default=3, type=float,
-                        help="Pause duration to consider phrase complete (realtime mode)")
+                        metavar="SECONDS",
+                        help="Silence duration to consider phrase complete (default: 3)\n"
+                             "After this many seconds of silence, starts new line\n"
+                             "Lower = more line breaks, higher = fewer breaks")
     parser.add_argument("--sample_rate", default=16000, type=int,
-                        help="Sample rate for audio recording")
+                        metavar="HZ",
+                        help="Sample rate for audio recording (default: 16000)\n"
+                             "Whisper uses 16kHz internally, higher may help quality")
     
     # Simple/button recording settings
     parser.add_argument("--record_duration", default=5, type=int,
-                        help="Recording duration in seconds (simple/button mode)")
+                        metavar="SECONDS",
+                        help="Recording duration in seconds (default: 5)\n"
+                             "Used in simple and button modes\n"
+                             "How long to record when triggered")
     
     # Raspberry Pi settings (Chloe's parameters)
     parser.add_argument("--gpio_pin", default=17, type=int,
-                        help="GPIO pin for button (button mode, default 17)")
+                        metavar="PIN",
+                        help="GPIO pin number for button (default: 17)\n"
+                             "Uses BCM numbering (not physical pin numbers)\n"
+                             "Connect button between this pin and ground")
     
     # Noise reduction
     parser.add_argument("--no_clean", action='store_true',
-                        help="Skip noise reduction step")
+                        help="Skip noise reduction/cleaning step\n"
+                             "Use this if audio is already clean or to save time")
     parser.add_argument("--clean_method", default="auto",
                         choices=["auto", "sox", "noisereduce"],
-                        help="Noise reduction method (auto picks best available)")
+                        metavar="METHOD",
+                        help="Noise reduction method (default: auto)\n"
+                             "  auto = Try SOX first, fallback to noisereduce\n"
+                             "  sox = Use SOX (faster, requires installation)\n"
+                             "  noisereduce = Pure Python (slower, no deps)")
     
     # Output settings
     parser.add_argument("--output_dir", default="transcriptions",
-                        help="Directory to save transcription files")
+                        metavar="DIR",
+                        help="Directory to save transcription files (default: transcriptions)\n"
+                             "Creates timestamped .txt files for each transcription")
     
     args = parser.parse_args()
     
