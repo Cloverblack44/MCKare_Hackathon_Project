@@ -3,6 +3,8 @@ import os
 import sys
 import time
 import wave
+import tempfile
+import subprocess
 import datetime
 import argparse
 import msvcrt  # Windows keypress
@@ -24,6 +26,81 @@ CHUNK = 1024
 DEFAULT_MODEL = "tiny"       # "tiny" for speed on low-power devices
 
 TARGET_SR = 16000
+
+def _ffmpeg_bin() -> str:
+    """
+    Returns the ffmpeg executable to use.
+    - If you set env var FFMPEG_BIN, we use that.
+    - Otherwise, we assume 'ffmpeg' is on PATH.
+    """
+    return os.environ.get("FFMPEG_BIN", "ffmpeg")
+
+
+def convert_to_wav_ffmpeg(src_path: str, target_sr: int = TARGET_SR, mono: bool = True) -> str:
+    """
+    Convert any audio (e.g., .m4a, .mp3, .aac) to a temp WAV using ffmpeg.
+    Returns path to the temp WAV.
+    """
+    tmp_fd, tmp_wav = tempfile.mkstemp(suffix=".wav")
+    os.close(tmp_fd)  # we'll let ffmpeg write to it
+
+    cmd = [
+        _ffmpeg_bin(),
+        "-y",               # overwrite temp file if exists
+        "-i", src_path,     # input
+    ]
+    if mono:
+        cmd += ["-ac", "1"]
+    if target_sr:
+        cmd += ["-ar", str(target_sr)]
+
+    cmd += ["-vn", tmp_wav]  # no video
+
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return tmp_wav
+    except FileNotFoundError:
+        raise RuntimeError(
+            "ffmpeg not found. Either add it to PATH or set FFMPEG_BIN to the full path of ffmpeg.exe."
+        )
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg failed to convert '{src_path}': {e.stderr.decode(errors='ignore')}")
+
+def load_audio_np_any(path: str, target_sr: int = TARGET_SR) -> np.ndarray:
+    """
+    Load audio into a float32 mono NumPy array at target_sr.
+    Strategy:
+      1) Try reading with soundfile.
+      2) If that fails (common for .m4a), convert with ffmpeg to WAV, then read.
+    """
+    # First try direct load via soundfile
+    try:
+        audio, sr = sf.read(path, always_2d=False)
+    except Exception:
+        # Fallback: convert to WAV with ffmpeg then read
+        tmp_wav = convert_to_wav_ffmpeg(path, target_sr=target_sr, mono=True)
+        try:
+            audio, sr = sf.read(tmp_wav, always_2d=False)
+        finally:
+            try:
+                os.remove(tmp_wav)
+            except Exception:
+                pass
+
+    # Mono
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+
+    # Float32
+    if audio.dtype != np.float32:
+        audio = audio.astype(np.float32)
+
+    # Resample if needed (in case soundfile read wasn’t at target_sr)
+    if sr != target_sr:
+        audio = resample_poly(audio, target_sr, sr)
+
+    return np.ascontiguousarray(audio)
+
 
 def load_audio_np(path: str, target_sr: int = TARGET_SR) -> np.ndarray:
     """Load audio without ffmpeg: read with soundfile, mono, float32, resample to 16 kHz."""
@@ -106,7 +183,7 @@ def transcribe_audio(audio_file: str, output_text_file: str, model_size: str = D
     model = whisper.load_model(model_size)
 
     # Load/resample ourselves so Whisper doesn't call ffmpeg
-    audio_np = load_audio_np(audio_file, TARGET_SR)
+    audio_np = load_audio_np_any(audio_file, TARGET_SR)
 
     # On CPU, ensure fp16=False
     result = model.transcribe(audio_np, fp16=False)
