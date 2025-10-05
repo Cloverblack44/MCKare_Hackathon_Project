@@ -1,6 +1,6 @@
 #! python3.7
 """
-Unified Audio Transcription System
+Nightingale - Unified Audio Transcription System
 Combines real-time transcription, noise reduction, and Raspberry Pi support
 
 Features:
@@ -200,6 +200,44 @@ def record_audio_simple(filename, duration, sample_rate=44100):
     print(f"✅ Saved raw audio: {filename}")
     return True
 
+
+# ============================================================================
+# AUDIO PLAYBACK MODULE
+# ============================================================================
+
+def play_audio_only(audio_file):
+    """
+    Just play an audio file without transcription
+    Simple playback function for testing audio files
+    """
+    if not HAS_SOUNDDEVICE:
+        print("❌ sounddevice not available for audio playback")
+        return
+    
+    if not os.path.exists(audio_file):
+        print(f"❌ Audio file not found: {audio_file}")
+        return
+    
+    print(f"🔊 Playing: {audio_file}")
+    print("   Press Ctrl+C to stop\n")
+    
+    try:
+        data, samplerate = sf.read(audio_file)
+        print(f"   Duration: {len(data)/samplerate:.2f} seconds")
+        print(f"   Sample rate: {samplerate} Hz")
+        print(f"   Channels: {data.ndim if data.ndim == 1 else data.shape[1]}\n")
+        print("▶️  Playing...\n")
+        
+        sd.play(data, samplerate)
+        sd.wait()
+        
+        print("\n✅ Playback complete!")
+        
+    except KeyboardInterrupt:
+        print("\n⏹️  Playback stopped by user")
+        sd.stop()
+    except Exception as e:
+        print(f"❌ Error playing audio: {e}")
 
 # ============================================================================
 # REAL-TIME TRANSCRIPTION MODULE (Kayla's approach)
@@ -751,7 +789,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="""
 ╔══════════════════════════════════════════════════════════════════╗
-║   Unified Audio Transcription System                            ║
+║   Nightingale - Audio Transcription System                      ║
 ║   Combines real-time transcription, noise reduction,             ║
 ║   and Raspberry Pi support in one modular script                 ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -772,6 +810,9 @@ EXAMPLES:
 
   # Simple recording (5 seconds, then transcribe)
   python nightingale.py --mode simple --record_duration 5
+
+  # Just play an audio file (test your audio setup)
+  python nightingale.py --mode play --audio_file test.wav
 
   # Raspberry Pi button mode (each press records 5 seconds)
   python nightingale.py --mode button --gpio_pin 17
@@ -794,14 +835,16 @@ For detailed documentation, see design_README.md
     
     # Mode selection
     parser.add_argument("--mode", default="realtime",
-                        choices=["realtime", "file", "simple", "button", "button_toggle"],
+                        choices=["realtime", "file", "simple", "button", "button_toggle", "play"],
                         metavar="MODE",
                         help="Transcription mode (default: realtime)\n"
                              "  realtime = Live mic with streaming display\n"
                              "  file = Transcribe existing audio file\n"
                              "  simple = Record then transcribe (no realtime)\n"
                              "  button = RPi GPIO trigger (press=record N sec)\n"
-                             "  button_toggle = RPi GPIO (press=start, press=stop)")
+                             "  button_toggle = RPi GPIO (press=start, press=stop)\n"
+                             "  play = Just play audio file (no transcription)"
+                             )
     
     # Model settings
     parser.add_argument("--model", default="base",
@@ -884,6 +927,13 @@ For detailed documentation, see design_README.md
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+
+    if args.mode == "play":
+        if not args.audio_file:
+            print("❌ --audio_file required for play mode")
+            sys.exit(1)
+        play_audio_only(args.audio_file)
+        return
     
     # Load Whisper model
     model_name = args.model
