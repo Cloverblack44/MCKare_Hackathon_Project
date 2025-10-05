@@ -476,10 +476,24 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
     Raspberry Pi button START/STOP toggle mode
     First press → start listening (realtime transcription)
     Second press → stop listening and save
+    
+    Falls back to keyboard control ('s' to start/stop) if GPIO unavailable
     """
+    use_gpio = HAS_GPIO
+    use_keyboard = False
+    
     if not HAS_GPIO:
-        print("❌ RPi.GPIO not available. Not running on Raspberry Pi?")
-        return
+        print("⚠️ RPi.GPIO not available. Falling back to keyboard control.")
+        print("   Press 's' to START/STOP listening (instead of button)")
+        use_keyboard = True
+        
+        # Import keyboard detection
+        if os.name == 'nt':  # Windows
+            import msvcrt
+        else:  # Linux/Mac
+            import sys
+            import tty
+            import termios
     
     if not HAS_SOUNDDEVICE:
         print("❌ sounddevice not available for realtime transcription")
@@ -487,11 +501,14 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
     
     BUTTON_PIN = args.gpio_pin
     
-    # Setup GPIO
-    GPIO.setmode(GPIO.BCM)
-    GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+    # Setup GPIO if available
+    if use_gpio:
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+        print(f"🔘 Ready. Press button on GPIO pin {BUTTON_PIN} to START/STOP listening.")
+    else:
+        print("⌨️  Ready. Press 's' key to START/STOP listening.")
     
-    print(f"🔘 Ready. Press button on GPIO pin {BUTTON_PIN} to START/STOP listening.")
     print("   First press = start listening, second press = stop and save")
     
     is_recording = False
@@ -500,6 +517,22 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
     data_queue = queue.Queue()
     transcription = ['']
     output_file = None
+    
+    def check_keyboard_press():
+        """Check if 's' key was pressed (non-GPIO fallback)"""
+        if os.name == 'nt':  # Windows
+            if msvcrt.kbhit():
+                ch = msvcrt.getch()
+                try:
+                    return ch.decode('utf-8').lower() == 's'
+                except:
+                    return False
+        else:  # Linux/Mac
+            import select
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.read(1)
+                return ch.lower() == 's'
+        return False
     
     def audio_callback(indata, frames, time, status):
         """Callback to receive audio data from microphone"""
@@ -539,7 +572,10 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
         )
         stream.start()
         
-        print("🎙️ LISTENING... (press button again to stop)")
+        if use_gpio:
+            print("🎙️ LISTENING... (press button again to stop)")
+        else:
+            print("🎙️ LISTENING... (press 's' again to stop)")
         print(f"   Saving to: {output_file}\n")
     
     def stop_listening():
@@ -566,30 +602,52 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
                     f.write(line + '\n')
         
         print(f"\n✅ Transcription saved to: {output_file}")
-        print("🔘 Ready. Press button to start new recording.\n")
+        if use_gpio:
+            print("🔘 Ready. Press button to start new recording.\n")
+        else:
+            print("⌨️  Ready. Press 's' to start new recording.\n")
     
     last_button_time = 0
     phrase_time = None
     
+    # Setup terminal for non-blocking keyboard input on Linux/Mac
+    if use_keyboard and os.name != 'nt':
+        old_settings = termios.tcgetattr(sys.stdin)
+        try:
+            tty.setcbreak(sys.stdin.fileno())
+        except:
+            pass
+    
     try:
         while True:
-            # Check for button press with debounce
-            if GPIO.input(BUTTON_PIN) == GPIO.LOW:
-                current_time = time.time()
-                if current_time - last_button_time > 0.5:  # 500ms debounce
-                    last_button_time = current_time
-                    
-                    if not is_recording:
-                        # Start recording
-                        start_listening()
-                        is_recording = True
+            toggle_triggered = False
+            
+            # Check for button press (GPIO) or keyboard press
+            if use_gpio:
+                if GPIO.input(BUTTON_PIN) == GPIO.LOW:
+                    current_time = time.time()
+                    if current_time - last_button_time > 0.5:  # 500ms debounce
+                        last_button_time = current_time
+                        toggle_triggered = True
                         sleep(0.5)  # Give user time to release button
-                    else:
-                        # Stop recording
-                        stop_listening()
-                        is_recording = False
-                        phrase_time = None
-                        sleep(0.5)  # Debounce
+            
+            elif use_keyboard:
+                if check_keyboard_press():
+                    current_time = time.time()
+                    if current_time - last_button_time > 0.5:  # 500ms debounce
+                        last_button_time = current_time
+                        toggle_triggered = True
+                        sleep(0.3)  # Brief delay
+            
+            # Handle toggle
+            if toggle_triggered:
+                if not is_recording:
+                    start_listening()
+                    is_recording = True
+                else:
+                    stop_listening()
+                    is_recording = False
+                    phrase_time = None
             
             # If recording, process audio queue
             if is_recording and not data_queue.empty():
@@ -639,7 +697,13 @@ def raspberry_pi_button_toggle_mode(args, audio_model):
             stream.stop()
             stream.close()
     finally:
-        GPIO.cleanup()
+        if use_gpio:
+            GPIO.cleanup()
+        if use_keyboard and os.name != 'nt':
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
+            except:
+                pass
 
 
 # ============================================================================
@@ -696,7 +760,8 @@ MODES:
   realtime  - Live microphone transcription with streaming display
   file      - Transcribe existing audio files (with optional playback)
   simple    - Record audio, clean it, then transcribe (no realtime)
-  button    - Raspberry Pi GPIO button-triggered recording
+  button    - Raspberry Pi GPIO button-triggered recording (press → record N seconds)
+  button_toggle - Raspberry Pi GPIO start/stop toggle (press → start, press → stop)
 
 EXAMPLES:
   # Real-time transcription as you speak
@@ -708,8 +773,11 @@ EXAMPLES:
   # Simple recording (5 seconds, then transcribe)
   python unified_transcribe.py --mode simple --record_duration 5
 
-  # Raspberry Pi button mode on GPIO pin 17
+  # Raspberry Pi button mode (each press records 5 seconds)
   python unified_transcribe.py --mode button --gpio_pin 17
+
+  # Raspberry Pi toggle mode (first press starts, second press stops)
+  python unified_transcribe.py --mode button_toggle --gpio_pin 17
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -726,13 +794,14 @@ For detailed documentation, see design_README.md
     
     # Mode selection
     parser.add_argument("--mode", default="realtime",
-                        choices=["realtime", "file", "simple", "button"],
+                        choices=["realtime", "file", "simple", "button", "button_toggle"],
                         metavar="MODE",
                         help="Transcription mode (default: realtime)\n"
                              "  realtime = Live mic with streaming display\n"
                              "  file = Transcribe existing audio file\n"
                              "  simple = Record then transcribe (no realtime)\n"
-                             "  button = Raspberry Pi GPIO trigger")
+                             "  button = RPi GPIO trigger (press=record N sec)\n"
+                             "  button_toggle = RPi GPIO (press=start, press=stop)")
     
     # Model settings
     parser.add_argument("--model", default="base",
@@ -858,8 +927,12 @@ For detailed documentation, see design_README.md
         simple_record_and_transcribe(args, audio_model)
     
     elif args.mode == "button":
-        print("🔘 Raspberry Pi Button Mode")
+        print("🔘 Raspberry Pi Button Mode (Press to Record)")
         raspberry_pi_button_mode(args, audio_model)
+    
+    elif args.mode == "button_toggle":
+        print("🔘 Raspberry Pi Button Toggle Mode (Press to Start/Stop)")
+        raspberry_pi_button_toggle_mode(args, audio_model)
 
 
 if __name__ == "__main__":
