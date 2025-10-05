@@ -95,41 +95,38 @@ except ImportError:
 
 def speak_text(text, rate=150):
     """
-    Read text aloud using pyttsx3 (offline TTS)
-    
-    Args:
-        text: String to speak
-        rate: Speech rate (words per minute, default 150)
+    Read text aloud - uses espeak directly on Linux, pyttsx3 on other platforms
     """
-    if not HAS_TTS:
-        print("⚠️ pyttsx3 not available for text-to-speech")
+    if not text or text.strip() == "":
         return
     
-    if not text or text.strip() == "":
+    # On Linux/Raspberry Pi, use espeak directly (more reliable)
+    if sys.platform.startswith('linux'):
+        try:
+            # espeak uses words per minute, -s flag sets speed
+            subprocess.run(['espeak', '-s', str(rate), text], 
+                          check=False, 
+                          stderr=subprocess.DEVNULL)
+            return
+        except FileNotFoundError:
+            print("⚠️ espeak not installed. Run: sudo apt-get install espeak")
+            return
+        except Exception as e:
+            print(f"⚠️ espeak error: {e}")
+            return
+    
+    # On other platforms (Mac/Windows), use pyttsx3
+    if not HAS_TTS:
+        print("⚠️ pyttsx3 not available for text-to-speech")
         return
     
     try:
         engine = pyttsx3.init()
         engine.setProperty('rate', rate)
-        
-        # Raspberry Pi fix: Don't set voice, use default
-        # The setVoiceByName error happens when trying to set a specific voice
-        # Just use whatever voice is available
-        
-        # Optional: Set volume
-        engine.setProperty('volume', 0.9)
-        
         engine.say(text)
         engine.runAndWait()
     except Exception as e:
         print(f"⚠️ TTS error: {e}")
-        # Try fallback: just speak without any property changes
-        try:
-            engine = pyttsx3.init()
-            engine.say(text)
-            engine.runAndWait()
-        except:
-            print("⚠️ TTS failed completely")
 
 # Suppress FP16 warnings
 warnings.filterwarnings("ignore", message="FP16 is not supported on CPU*")
